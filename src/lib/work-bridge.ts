@@ -34,32 +34,20 @@ import { execSync } from "child_process";
 import fs from "fs";
 import path from "path";
 import matter from "gray-matter";
-import { WORK_DIR, relativeToVault, toWikilink } from "./path-utils.js";
+import {
+  WORK_DIR,
+  relativeToVault,
+  toWikilink,
+  findTaskFile,
+  findTaskFileGlobal,
+  readTaskInfo,
+  sanitizeFilename,
+  shellQuote,
+} from "@hermes/vault-utils";
+import type { TaskInfo } from "@hermes/vault-utils";
 
-// ── 接口定义 ─────────────────────────────────────────────────────────────
-
-/**
- * 任务信息接口 —— 描述一个工作任务的完整信息
- *
- * @property absPath      任务文件的绝对路径
- * @property relPath      相对于 vault 根目录的路径
- * @property wikilink     Obsidian wikilink 格式的链接，如 "[[30-Projects/Work/...]]"
- * @property alias        显示别名，格式为 "项目: 标题"
- * @property project      所属项目名称
- * @property title        任务标题
- * @property status       当前状态（emoji + 文字），如 "🌱 Planned", "🌿 Active", "🍂 Completed"
- * @property frontmatter  完整的 YAML frontmatter 数据
- */
-export interface TaskInfo {
-  absPath: string;
-  relPath: string;
-  wikilink: string;
-  alias: string;
-  project: string;
-  title: string;
-  status: string;
-  frontmatter: Record<string, unknown>;
-}
+// Re-export shared symbols so downstream files can still import from work-bridge
+export { TaskInfo, findTaskFile, findTaskFileGlobal, readTaskInfo };
 
 // ── 工作引擎桥接 ─────────────────────────────────────────────────────────
 
@@ -139,113 +127,6 @@ export function createTaskViaEngine(
   throw new Error("work-engine returned unexpected output");
 }
 
-/**
- * 在指定项目目录中查找任务文件（支持模糊匹配）
- *
- * @param vaultRoot  Obsidian vault 根目录
- * @param project    项目名称
- * @param title      任务标题
- * @returns {string | null} 任务文件的绝对路径，未找到返回 null
- *
- * 查找策略：
- *   1. 精确匹配：清理标题为文件名格式，检查文件是否存在
- *   2. 模糊搜索：将标题拆分为单词，检查每个文件名是否包含所有单词
- */
-export function findTaskFile(
-  vaultRoot: string,
-  project: string,
-  title: string
-): string | null {
-  const workDir = path.join(vaultRoot, WORK_DIR, project);
-  if (!fs.existsSync(workDir)) return null;
-
-  // 精确匹配：将标题转为合法文件名后查找
-  const sanitized = sanitizeFilename(title);
-  const exactPath = path.join(workDir, `${sanitized}.md`);
-  if (fs.existsSync(exactPath)) return exactPath;
-
-  // 模糊搜索：标题中的所有单词都出现在文件名中即匹配
-  const files = fs.readdirSync(workDir).filter(f => f.endsWith(".md") && f !== "INDEX.md");
-  const titleWords = title.toLowerCase().split(/\s+/);
-
-  for (const file of files) {
-    const name = file.replace(/\.md$/, "").toLowerCase();
-    if (titleWords.every(w => name.includes(w))) {
-      return path.join(workDir, file);
-    }
-  }
-
-  return null;
-}
-
-/**
- * 跨所有项目全局查找任务文件
- *
- * @param vaultRoot  Obsidian vault 根目录
- * @param title      任务标题
- * @returns {TaskInfo | null} 任务信息，未找到返回 null
- *
- * 遍历 Work/ 下所有项目目录，调用 findTaskFile 查找。
- * 返回第一个匹配的任务。
- */
-export function findTaskFileGlobal(
-  vaultRoot: string,
-  title: string
-): TaskInfo | null {
-  const workRoot = path.join(vaultRoot, WORK_DIR);
-  if (!fs.existsSync(workRoot)) return null;
-
-  // 获取所有项目目录
-  const projects = fs.readdirSync(workRoot).filter(d => {
-    const full = path.join(workRoot, d);
-    return fs.statSync(full).isDirectory();
-  });
-
-  // 遍历每个项目查找
-  for (const project of projects) {
-    const absPath = findTaskFile(vaultRoot, project, title);
-    if (absPath) {
-      return buildTaskInfo(vaultRoot, absPath, project, title);
-    }
-  }
-
-  return null;
-}
-
-/**
- * 从已存在的任务文件中读取任务信息
- *
- * @param vaultRoot  Obsidian vault 根目录
- * @param absPath    任务文件的绝对路径
- * @returns {TaskInfo | null} 任务信息，文件不存在返回 null
- *
- * 从文件路径中推断项目名（30-Projects/Work/<project>/file.md 中的 <project>），
- * 从 frontmatter 中读取标题和状态。
- */
-export function readTaskInfo(vaultRoot: string, absPath: string): TaskInfo | null {
-  if (!fs.existsSync(absPath)) return null;
-
-  const raw = fs.readFileSync(absPath, "utf-8");
-  const parsed = matter(raw);
-  const relPath = relativeToVault(vaultRoot, absPath);
-  // 从路径中提取项目名：30-Projects/Work/<project>/file.md → <project>
-  const parts = relPath.split("/");
-  const project = parts.length >= 4 ? parts[2] : "General";
-  // 提取标题：优先 frontmatter title，其次内容中的一级标题，最后用文件名
-  const title = parsed.data.title ?? parsed.content.match(/^#\s+(.+)/m)?.[1] ?? path.basename(absPath, ".md");
-
-  return {
-    absPath,
-    relPath,
-    wikilink: toWikilink(relPath),
-    alias: `${project}: ${title}`,
-    project,
-    title: String(title),
-    status: parsed.data.status ?? "🌱 Planned",
-    frontmatter: parsed.data,
-  };
-}
-
 // ── 内部辅助函数 ─────────────────────────────────────────────────────────
 
 /**
@@ -317,37 +198,4 @@ created: '${dateStr}'
   return buildTaskInfo(vaultRoot, absPath, project, title);
 }
 
-/**
- * 将标题字符串清理为合法的文件名
- *
- * @param name  原始标题
- * @returns {string} 清理后的文件名
- *
- * 处理规则：
- *   1. 替换文件系统不允许的字符（/\:*?"<>|）为连字符
- *   2. 将空白字符替换为连字符
- *   3. 合并连续的连字符
- *   4. 去除首尾的连字符
- *   5. 截断到 80 字符
- */
-function sanitizeFilename(name: string): string {
-  return name
-    .replace(/[\/\\:*?"<>|]/g, "-")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .substring(0, 80);
-}
 
-/**
- * 对字符串进行 shell 安全引用
- *
- * @param s  原始字符串
- * @returns {string} shell 引用后的字符串
- *
- * 使用单引号包裹，内部的单引号通过 '\'' 转义。
- * 示例：shellQuote("it's") → "'it'\''s'"
- */
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
