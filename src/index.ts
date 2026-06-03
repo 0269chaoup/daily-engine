@@ -27,6 +27,7 @@
  *   - commands/today.ts       → today:      显示今日概览
  *   - commands/week-review.ts → week-review:生成周复盘报告
  *   - commands/link.ts        → link:       校验双向链接完整性
+ *   - commands/sync.ts        → sync:       同步日记 checkbox 到工作任务
  */
 
 import { Command } from "commander";
@@ -37,6 +38,7 @@ import { completeCommand, blockCommand, unblockCommand } from "./commands/comple
 import { todayCommand } from "./commands/today.js";
 import { weekReviewCommand } from "./commands/week-review.js";
 import { linkCommand } from "./commands/link.js";
+import { syncCommand } from "./commands/sync.js";
 
 /** 创建 CLI 程序实例 */
 const program = new Command();
@@ -67,6 +69,7 @@ program.addCommand(unblockCommand());
 program.addCommand(todayCommand());
 program.addCommand(weekReviewCommand());
 program.addCommand(linkCommand());
+program.addCommand(syncCommand());
 
 /** 解析命令行参数，匹配子命令并执行 */
 program.parse();
